@@ -1,0 +1,80 @@
+name: Shorebird Patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: '环境'
+        required: true
+        type: choice
+        options:
+          - sit
+          - prod
+      release_version:
+        description: '要打补丁的发布版本 (例如 1.0.0+100)'
+        required: true
+        type: string
+      track:
+        description: '发布轨道'
+        required: true
+        type: choice
+        default: stable
+        options:
+          - stable
+          - beta
+
+jobs:
+  patch:
+    name: Shorebird Patch (${{ github.event.inputs.env }} / ${{ github.event.inputs.release_version }})
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Shorebird
+        uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Setup Android keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: Shorebird Patch
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        run: |
+          bash scripts/patch_shorebird_android.sh \
+            --env "${{ github.event.inputs.env }}" \
+            --release-version "${{ github.event.inputs.release_version }}" \
+            --track "${{ github.event.inputs.track }}" \
+            --skip-release-check
+
+      - name: Cleanup keystore
+        if: always()
+        run: |
+          rm -f android/app/upload-keystore.jks android/key.properties

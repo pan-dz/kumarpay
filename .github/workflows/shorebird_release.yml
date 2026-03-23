@@ -1,0 +1,116 @@
+name: Shorebird Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如 1.0.0)'
+        required: true
+        type: string
+      build_number:
+        description: '构建号 (例如 100)'
+        required: true
+        type: string
+      env:
+        description: '环境'
+        required: true
+        type: choice
+        options:
+          - sit
+          - prod
+      artifact:
+        description: '产物类型'
+        required: true
+        type: choice
+        default: apk
+        options:
+          - apk
+          - aab
+
+jobs:
+  release:
+    name: Shorebird Release (${{ github.event.inputs.env || 'prod' }})
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Shorebird
+        uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Determine version and build number
+        id: vars
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            BUILD_NUMBER="${{ github.run_number }}"
+            ENV="prod"
+            ARTIFACT="apk"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+            BUILD_NUMBER="${{ github.event.inputs.build_number }}"
+            ENV="${{ github.event.inputs.env }}"
+            ARTIFACT="${{ github.event.inputs.artifact }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "env=${ENV}" >> "$GITHUB_OUTPUT"
+          echo "artifact=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Android keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: Shorebird Release
+        env:
+          SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+        run: |
+          bash scripts/build_shorebird_android.sh \
+            --version "${{ steps.vars.outputs.version }}" \
+            --build "${{ steps.vars.outputs.build_number }}" \
+            --env "${{ steps.vars.outputs.env }}" \
+            --artifact "${{ steps.vars.outputs.artifact }}" \
+            --skip-icons \
+            --output-dir build/output
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KumarPay-${{ steps.vars.outputs.env }}-${{ steps.vars.outputs.version }}+${{ steps.vars.outputs.build_number }}
+          path: build/output/
+          retention-days: 30
+
+      - name: Cleanup keystore
+        if: always()
+        run: |
+          rm -f android/app/upload-keystore.jks android/key.properties
